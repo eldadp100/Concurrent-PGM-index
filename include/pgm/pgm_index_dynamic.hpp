@@ -149,7 +149,8 @@ class DynamicPGMIndex {
         }
         return std::make_pair(insert_level, slots_required);
     }
-
+    
+   
     bool insert_to_buffer(const Item &new_item, typename Level::iterator insertion_point) {
         buffer_lock.lock();
         if (insertion_point != level(min_level).end() && *insertion_point == new_item) {
@@ -174,7 +175,17 @@ class DynamicPGMIndex {
         uint8_t insert_level = ret_pair.first;
         size_t slots_required = ret_pair.second;
         lock_multiple(min_index_level, insert_level);
-        // validate
+        // validate - not work
+        uint8_t val_insert_level = find_insert_level().first;
+        if (insert_level != val_insert_level) {
+            if (insert_level < val_insert_level) {
+              unlock_multiple(min_index_level, insert_level);
+              insert(new_item);
+              return;
+            }
+            unlock_multiple(val_insert_level+1, insert_level);
+            insert_level = val_insert_level;
+        }
 
         // save_levels
         std::vector<Level> to_merge_levels; 
