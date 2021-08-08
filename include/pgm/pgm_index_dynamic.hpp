@@ -16,6 +16,10 @@
 #pragma once
 
 #include "pgm_index.hpp"
+#include "pgm/EBR.hpp"
+#include <mutex>
+#include <utility>
+#include <thread>
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
@@ -44,19 +48,26 @@ class DynamicPGMIndex {
     class ItemB;
     class Iterator;
 
-    using Item = std::conditional_t<std::is_pointer_v<V> || std::is_arithmetic_v<V>, ItemA, ItemB>;
+    using Item = ItemA;
     using Level = std::vector<Item>;
+
+    pgm::EBR<Level> _smr;
 
     const uint8_t base;            ///< base^i is the maximum size of the ith level.
     const uint8_t min_level;       ///< Levels 0..min_level are combined into one large level.
     const uint8_t min_index_level; ///< Minimum level on which an index is constructed.
     size_t buffer_max_size;        ///< Size of the combined upper levels, i.e. max_size(0) + ... + max_size(min_level).
+    std::mutex buffer_lock;
+    
     uint8_t used_levels;           ///< Equal to 1 + last level whose size is greater than 0, or = min_level if no data.
     std::vector<Level> levels;     ///< (i-min_level)th element is the data array at the ith level.
     std::vector<PGMType> pgms;     ///< (i-min_index_level)th element is the index at the ith level.
+    std::vector<std::mutex> pgms_mutex;
 
     const Level &level(uint8_t level) const { return levels[level - min_level]; }
     const PGMType &pgm(uint8_t level) const { return pgms[level - min_index_level]; }
+    std::mutex &mtx(uint8_t level) { return pgms_mutex[level - min_index_level]; }
+
     Level &level(uint8_t level) { return levels[level - min_level]; }
     PGMType &pgm(uint8_t level) { return pgms[level - min_index_level]; }
     bool has_pgm(uint8_t level) const { return level >= min_index_level; }
@@ -68,19 +79,20 @@ class DynamicPGMIndex {
     void pairwise_merge(const Item &new_item,
                         uint8_t target,
                         size_t size_hint,
-                        typename Level::iterator insertion_point) {
-        Level tmp_a(size_hint + level(target).size());
-        Level tmp_b(size_hint + level(target).size());
+                        typename Level::iterator insertion_point,
+                        std::vector<Level> saved_levels) {
+        Level tmp_a(size_hint + saved_levels[target-min_level].size());
+        Level tmp_b(size_hint + saved_levels[target-min_level].size());
 
         // Insert new_item in sorted order in the first level
         auto alternate = true;
-        auto it = std::move(level(min_level).begin(), insertion_point, tmp_a.begin());
+        auto it = std::move(saved_levels[0].begin(), insertion_point, tmp_a.begin());
         *it++ = new_item;
-        it = std::move(insertion_point, level(min_level).end(), it);
+        it = std::move(insertion_point, saved_levels[0].end(), it);
         tmp_a.resize(std::distance(tmp_a.begin(), it));
 
         // Merge subsequent levels
-        uint8_t merge_limit = level(target).empty() ? target - 1 : target;
+        uint8_t merge_limit = saved_levels[target-min_level].empty() ? target - 1 : target;
         for (uint8_t i = 1 + min_level; i <= merge_limit; ++i, alternate = !alternate) {
             auto tmp_begin = (alternate ? tmp_a : tmp_b).begin();
             auto tmp_end = (alternate ? tmp_a : tmp_b).end();
@@ -89,60 +101,115 @@ class DynamicPGMIndex {
 
             auto can_delete_permanently = i == used_levels - 1;
             if (can_delete_permanently)
-                out_end = merge<true>(tmp_begin, tmp_end, level(i).begin(), level(i).end(), out_begin);
+                out_end = merge<true>(tmp_begin, tmp_end, saved_levels[i-min_level].begin(), saved_levels[i-min_level].end(), out_begin);
             else
-                out_end = merge<false>(tmp_begin, tmp_end, level(i).begin(), level(i).end(), out_begin);
+                out_end = merge<false>(tmp_begin, tmp_end, saved_levels[i-min_level].begin(), saved_levels[i-min_level].end(), out_begin);
 
             (alternate ? tmp_b : tmp_a).resize(std::distance(out_begin, out_end));
             (alternate ? tmp_a : tmp_b).clear();
 
             // Empty this level and the corresponding index
-            level(i).clear();
+            saved_levels[i-min_level].clear();
             if (i >= max_fully_allocated_level())
-                level(i).shrink_to_fit();
+                saved_levels[i-min_level].shrink_to_fit();
             if (has_pgm(i))
                 pgm(i) = PGMType();
         }
 
-        level(min_level).clear();
-        level(target) = std::move(alternate ? tmp_a : tmp_b);
+        saved_levels[0].clear();
+        saved_levels[target-min_level] = std::move(alternate ? tmp_a : tmp_b);
 
         // Rebuild index, if needed
         if (has_pgm(target))
-            pgm(target) = PGMType(level(target).begin(), level(target).end());
+            pgm(target) = PGMType(saved_levels[target-min_level].begin(), saved_levels[target-min_level].end());
     }
 
-    void insert(const Item &new_item) {
-        auto insertion_point = lower_bound_bl(level(min_level).begin(), level(min_level).end(), new_item);
+    
+    void lock_multiple(int start, int end) {
+      // deadlock free
+        for (int i=start; i<=end; ++i) {
+          mtx(i).lock();
+        }
+    }
+
+    void unlock_multiple(int start, int end) {
+        for (int i=start; i<=end; ++i) {
+          mtx(i).unlock();
+        }
+    }
+
+    std::pair<uint8_t, size_t> find_insert_level() {
+        size_t slots_required = buffer_max_size + 1;
+        uint8_t insert_level;
+        for (insert_level = min_level + 1; insert_level < used_levels; ++insert_level) {
+            auto slots_left_in_level = max_size(insert_level) - level(insert_level).size();
+            if (slots_required <= slots_left_in_level)
+                break;
+            slots_required += level(insert_level).size();
+        }
+        return std::make_pair(insert_level, slots_required);
+    }
+
+    bool insert_to_buffer(const Item &new_item, typename Level::iterator insertion_point) {
+        buffer_lock.lock();
         if (insertion_point != level(min_level).end() && *insertion_point == new_item) {
             *insertion_point = new_item;
-            return;
+            buffer_lock.unlock();
+            return true;
         }
 
         if (level(min_level).size() < buffer_max_size) {
             level(min_level).insert(insertion_point, new_item);
             used_levels = used_levels == min_level ? min_level + 1 : used_levels;
-            return;
+            buffer_lock.unlock();
+            return true;
         }
 
-        size_t slots_required = buffer_max_size + 1;
-        uint8_t i;
-        for (i = min_level + 1; i < used_levels; ++i) {
-            auto slots_left_in_level = max_size(i) - level(i).size();
-            if (slots_required <= slots_left_in_level)
-                break;
-            slots_required += level(i).size();
+        return false;
+
+    }
+
+    void insert_to_levels(const Item &new_item,  typename Level::iterator insertion_point) {
+        std::pair<uint8_t, size_t> ret_pair = find_insert_level();
+        uint8_t insert_level = ret_pair.first;
+        size_t slots_required = ret_pair.second;
+        lock_multiple(min_index_level, insert_level);
+        // validate
+
+        // save_levels
+        std::vector<Level> to_merge_levels; 
+        for (int i=min_level; i<insert_level; ++i) {
+          to_merge_levels.push_back(level(i));
+          _smr.delete_level(level(i));
+          levels[i-min_level] = Level();
+          if (i >= min_index_level) {
+              // delete (with smr) pgms[i-min_index_level] 
+              pgms[i-min_index_level] = PGMType();
+              mtx(i).unlock();
+          } else {
+              buffer_lock.unlock();
+          }
+
         }
 
-        auto need_new_level = i == used_levels;
+        auto need_new_level = insert_level == used_levels;
         if (need_new_level) {
             ++used_levels;
             levels.emplace_back();
-            if (i - min_index_level >= int(pgms.size()))
+            if (insert_level - min_index_level >= int(pgms.size()))
                 pgms.emplace_back();
         }
+        
+        pairwise_merge(new_item, insert_level, slots_required, insertion_point, to_merge_levels);
+    }
 
-        pairwise_merge(new_item, i, slots_required, insertion_point);
+    void insert(const Item &new_item) {
+        size_t tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
+        _smr.on_start(tid);
+        auto insertion_point = lower_bound_bl(level(min_level).begin(), level(min_level).end(), new_item);
+        if (!insert_to_buffer(new_item, insertion_point)) {
+            insert_to_levels(new_item, insertion_point);
+        }
     }
 
 public:
@@ -692,21 +759,7 @@ public:
 template<typename K, typename V, typename PGMType>
 const V DynamicPGMIndex<K, V, PGMType>::ItemA::tombstone = get_tombstone<V>();
 
-template<typename K, typename V, typename PGMType>
-class DynamicPGMIndex<K, V, PGMType>::ItemB {
-    bool flag;
 
-public:
-    K first;
-    V second;
-
-    ItemB() { /* do not (default-)initialize for a more efficient std::vector<ItemB>::resize */ }
-    explicit ItemB(const K &key) : flag(true), first(key), second() {}
-    explicit ItemB(const K &key, const V &value) : flag(false), first(key), second(value) {}
-
-    operator K() const { return first; }
-    bool deleted() const { return flag; }
-};
 
 #pragma pack(pop)
 
