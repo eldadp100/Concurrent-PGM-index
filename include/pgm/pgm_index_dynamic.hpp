@@ -113,8 +113,6 @@ class DynamicPGMIndex {
             saved_levels[i-min_level].clear();
             if (i >= max_fully_allocated_level())
                 saved_levels[i-min_level].shrink_to_fit();
-            if (has_pgm(i))
-                pgm(i) = PGMType();
         }
 
         saved_levels[0].clear();
