@@ -34,6 +34,7 @@
 #include <utility>
 #include <vector>
 
+
 namespace pgm {
 
 /**
@@ -62,11 +63,11 @@ class DynamicPGMIndex {
     uint8_t used_levels;           ///< Equal to 1 + last level whose size is greater than 0, or = min_level if no data.
     std::vector<Level> levels;     ///< (i-min_level)th element is the data array at the ith level.
     std::vector<PGMType> pgms;     ///< (i-min_index_level)th element is the index at the ith level.
-    std::vector<std::mutex> pgms_mutex;
+    std::vector<std::unique_ptr<std::mutex>> pgms_mutex;
 
     const Level &level(uint8_t level) const { return levels[level - min_level]; }
     const PGMType &pgm(uint8_t level) const { return pgms[level - min_index_level]; }
-    std::mutex &mtx(uint8_t level) { return pgms_mutex[level - min_index_level]; }
+    std::mutex &mtx(uint8_t level) { return *pgms_mutex[level - min_index_level]; }
 
     Level &level(uint8_t level) { return levels[level - min_level]; }
     PGMType &pgm(uint8_t level) { return pgms[level - min_index_level]; }
@@ -178,13 +179,20 @@ class DynamicPGMIndex {
         // validate - not work
         uint8_t val_insert_level = find_insert_level().first;
         if (insert_level != val_insert_level) {
+            // if (insert_level < val_insert_level) {
+            //   unlock_multiple(min_index_level, insert_level);
+            //   insert(new_item);
+            //   return;
+            // }
+
             if (insert_level < val_insert_level) {
-              unlock_multiple(min_index_level, insert_level);
-              insert(new_item);
-              return;
+              lock_multiple(insert_level+1, val_insert_level);
+              insert_level = val_insert_level;
             }
-            unlock_multiple(val_insert_level+1, insert_level);
-            insert_level = val_insert_level;
+            else {
+              unlock_multiple(val_insert_level+1, insert_level);
+              insert_level = val_insert_level;
+            }
         }
 
         // save_levels
@@ -207,9 +215,17 @@ class DynamicPGMIndex {
         if (need_new_level) {
             ++used_levels;
             levels.emplace_back();
+            // to_merge_levels.push_back(level(insert_level));
+            // levels[insert_level-min_level] = Level();
+            
             if (insert_level - min_index_level >= int(pgms.size()))
                 pgms.emplace_back();
-        }
+                std::unique_ptr<std::mutex> new_mtx(new std::mutex);
+                pgms_mutex.push_back(std::move(new_mtx));
+                pgms[insert_level-min_index_level] = PGMType();
+                pgms_mutex.back()->lock();
+                // no need to validate - nothing can be added until we finish
+            }
         
         pairwise_merge(new_item, insert_level, slots_required, insertion_point, to_merge_levels);
     }
@@ -311,7 +327,28 @@ public:
      * Removes the specified element from the container.
      * @param key key value of the element to remove
      */
-    void erase(const K &key) { insert(Item(key)); }
+    void erase(const K &key) {
+      // insert(Item(key)); 
+      for (auto i = min_level; i < used_levels; ++i) {
+        if (level(i).empty())
+            continue;
+
+        auto first = level(i).begin();
+        auto last = level(i).end();
+        if (has_pgm(i)) {
+            auto range = pgm(i).search(key);
+            first = level(i).begin() + range.lo;
+            last = level(i).begin() + range.hi;
+        }
+
+        auto it = lower_bound_bl(first, last, key);
+        if (it != level(i).end() && it->first == key)
+        {
+          it->do_delete();
+          return;
+        }
+      }
+    }
 
     /**
      * Finds an element with key equivalent to @p key.
@@ -765,6 +802,7 @@ public:
 
     operator K() const { return first; }
     bool deleted() const { return this->second == tombstone; }
+    void do_delete() { this->second = tombstone;}
 };
 
 template<typename K, typename V, typename PGMType>
