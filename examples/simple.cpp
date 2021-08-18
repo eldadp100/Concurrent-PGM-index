@@ -14,8 +14,8 @@
 #include <thread>
 #include <chrono>
 
-int n_threads = 1;
-int load = 50000;
+int n_threads = 4;
+int load = 500000;
 
 void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, int k) {
     for (int i=1; i<load; i++) {
@@ -54,7 +54,7 @@ int main() {
                 b = true;
         }
 
-        bool found = !(dynamic_pgm.find(j) == dynamic_pgm.end());
+        bool found = !(dynamic_pgm.find(j) == NULL);
 
         if (b && found) {
             std::cout << "POSITIVE: " << j << " exists and found" << std::endl;
