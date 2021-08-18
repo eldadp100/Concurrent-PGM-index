@@ -1,6 +1,4 @@
 set(examples
-        mapped
-        multiset
         simple
         updates)
 
