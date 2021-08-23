@@ -84,10 +84,10 @@ namespace pgm {
 
     // BEGIN SKIPLIST IMPLEMENTATION
 #define SKIPLIST_TEMPLATE_ARGS \
-template <typename KeyType, typename ValueType>
+template <typename KeyType, typename ValueType, typename Item>
 
 #define SKIPLIST_TYPE \
-SkipList<KeyType, ValueType>
+SkipList<KeyType, ValueType, Item>
 
 SKIPLIST_TEMPLATE_ARGS
 class SkipList
@@ -144,6 +144,7 @@ class SkipList
             bool remove(const KeyType key);
 
             void print(std::ostream &os) const;
+            std::vector<Item> *to_vector();
             uint32_t size() const;
 
         private:
@@ -195,6 +196,26 @@ void SKIPLIST_TYPE::print(std::ostream &os) const
             os << "DELETED Key: " << x->key << " Value: " << x->value << " Level: " << x->top_level << std::endl;
         }
     }
+}
+SKIPLIST_TEMPLATE_ARGS
+std::vector<Item> *SKIPLIST_TYPE::to_vector()
+{
+    auto ret = new std::vector<Item>();
+    bool marked = false;
+    auto x = head->forward[0].get(marked);
+    auto succ = x;
+
+    while (succ->key != std::numeric_limits<KeyType>::max())
+    {
+        // traverse to the right
+        x = succ;
+        succ = succ->forward[0].get(marked);
+        if (!marked)
+        {
+            ret->push_back(Item(x->key, x->value));
+        }
+    }
+    return ret;
 }
 
 SKIPLIST_TEMPLATE_ARGS
