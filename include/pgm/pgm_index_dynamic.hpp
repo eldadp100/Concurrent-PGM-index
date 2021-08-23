@@ -160,16 +160,16 @@ namespace pgm {
         }
 
         bool insert_to_buffer(const Item &new_item) {
-            int buffer_size = pending_buffer_insert.fetch_add(1);
+            int buffer_size = pending_buffer_insert.fetch_add(1, std::memory_order_relaxed);
             if (buffer_size > buffer_max_size) {
                 if (buffer_size == buffer_max_size+1) {
                     return false;
                 } else {
-                    while (pending_buffer_insert.fetch_add(1) > buffer_max_size) {}
+                    while (pending_buffer_insert.fetch_add(1, std::memory_order_relaxed) > buffer_max_size) {}
                 }
             }
             buffer->insert(new_item.first, new_item.second);
-            done_buffer_insert.fetch_add(1);
+            done_buffer_insert.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
 
@@ -302,7 +302,7 @@ namespace pgm {
          * @param index_level the minimum level at which an index is constructed to speed up searches
          */
         template<typename Iterator>
-        DynamicPGMIndex(Iterator first, Iterator last, uint8_t base = 8, uint8_t buffer_level = 0, uint8_t index_level = 0)
+        DynamicPGMIndex(Iterator first, Iterator last, uint8_t base = 4, uint8_t buffer_level = 12, uint8_t index_level = 12)
         : DynamicPGMIndex(base, buffer_level, index_level) {
             size_t n = std::distance(first, last);
             used_levels = std::max<uint8_t>(ceil_log_base(n), min_level) + 1;

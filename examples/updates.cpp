@@ -14,8 +14,8 @@
 #include <thread>
 #include <chrono>
 
-int n_threads = 4;
-int load = 100000;
+int n_threads = 1;
+int load = 1000000;
 
 void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, int thread_load, int tid) {
     std::vector<std::pair<uint32_t, uint32_t>> data(thread_load);
