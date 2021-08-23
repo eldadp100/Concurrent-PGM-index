@@ -11,33 +11,46 @@
 #include <iostream>
 #include <algorithm>
 #include "pgm/pgm_index_dynamic.hpp"
+#include <thread>
+#include <chrono>
+
+int n_threads = 4;
+int load = 100000;
+
+void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, int thread_load, int tid) {
+    std::vector<std::pair<uint32_t, uint32_t>> data(thread_load);
+    std::generate(data.begin(), data.end(), [] { return std::make_pair(std::rand(), std::rand()); });
+    std::sort(data.begin(), data.end());
+    for (auto i: data) {
+        dynamic_pgm->insert_or_assign(i.first, i.second, tid);
+    }
+}
+
 
 int main() {
+    auto start_time = std::chrono::high_resolution_clock::now();
     // Generate some random key-value pairs to bulk-load the Dynamic PGM-index
-    std::vector<std::pair<uint32_t, uint32_t>> data(1000000);
+    std::vector<std::pair<uint32_t, uint32_t>> data(load);
     std::generate(data.begin(), data.end(), [] { return std::make_pair(std::rand(), std::rand()); });
     std::sort(data.begin(), data.end());
 
     // Construct and bulk-load the Dynamic PGM-index
     pgm::DynamicPGMIndex<uint32_t, uint32_t> dynamic_pgm(data.begin(), data.end());
 
-    // Insert some data
-    dynamic_pgm.insert_or_assign(2, 4);
-    dynamic_pgm.insert_or_assign(4, 8);
-    dynamic_pgm.insert_or_assign(8, 16);
+    std::hash<std::thread::id> hasher;
+    std::thread t[n_threads];
+    int thread_load = load / n_threads;
+    for (int i = 0; i < n_threads; ++i) {
+        t[i] = std::thread(foo, &dynamic_pgm, thread_load, hasher(t->get_id()));
+    }
 
-    // Delete data
-    dynamic_pgm.erase(4);
+    for (int i = 0; i < n_threads; ++i) {
+        t[i].join();
+    }
 
-    // Query the container
-    std::cout << "Container size (data + index) = " << dynamic_pgm.size_in_bytes() << " bytes" << std::endl;
-    std::cout << "find(4) = " << (dynamic_pgm.find(4) == dynamic_pgm.end() ? "not found" : "found") << std::endl;
-    std::cout << "find(8)->second = " << dynamic_pgm.find(8)->second << std::endl;
-
-    std::cout << "Range search [1, 10000) = ";
-    auto result = dynamic_pgm.range(1, 10000);
-    for (auto[k, v] : result)
-        std::cout << "(" << k << "," << v << "), ";
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto time = end_time - start_time;
+    std::cout << "Elapsed " << time/std::chrono::milliseconds(1) << std::endl;
 
     return 0;
 }

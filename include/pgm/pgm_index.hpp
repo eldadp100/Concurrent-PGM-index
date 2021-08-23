@@ -77,7 +77,6 @@ protected:
     K first_key;                        ///< The smallest element.
     std::vector<Segment> segments;      ///< The segments composing the index.
     std::vector<size_t> levels_offsets; ///< The starting position of each level in segments[], in reverse order.
-
     template<typename RandomIt>
     static void build(RandomIt first, RandomIt last,
                       size_t epsilon, size_t epsilon_recursive,

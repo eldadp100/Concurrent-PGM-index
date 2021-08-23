@@ -5,7 +5,7 @@
  * Arbitrary elemetns in [1,N] can be locked and unlocked during the time.
  * */
 
-#include "pgm_index.hpp"
+#include "utils.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
@@ -25,8 +25,8 @@ namespace pgm {
 
     class RangeLock {
     public:
-        std::atomic<bool> at_range_lock(false);
-        ConcurrentHeap<uint8_t, std::mutex*> locks_heap;
+        std::atomic<bool> at_range_lock;
+        MinHeap locks_heap;
         std::vector<std::mutex*> mutexes;
         uint8_t start_index;
         std::mutex *mtx(uint8_t level) { return levels_mtx[level - start_index]; }
@@ -43,12 +43,12 @@ namespace pgm {
                 return false; // already taken. Do something else in the meanwhile
             }
             uint8_t min_key;
-            while ((min_key=locks_heap.min().key) < end) {
+            while ((min_key=locks_heap.min()) < end) {
                 mtx(min_key)->lock();
                 mtx(min_key)->unlock();
             }
             mtx(end)->lock();
-            locks_heap.append(end, NULL);
+            locks_heap.insert(end);
             return true;
         }
 
@@ -59,6 +59,12 @@ namespace pgm {
         void unlock_one(uint8_t i) {
             mtx(i)->unlock();
             locks_heap.remove(i);
+        }
+
+        void reLock(int prev_end, int new_end) {
+            mtx(new_end) -> lock();
+            locks_heap.insert(new_end);
+            unlock_one(prev_end);
         }
     }
 }

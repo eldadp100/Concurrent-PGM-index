@@ -15,17 +15,19 @@
 #include <utility>
 #include <vector>
 #include <mutex>
+#include <map>
 
 namespace pgm {
-    template<typename L> // L for Level
+    template<typename L, typename PGMType> // L for Level
     class EBR {
 
         private:
         int epoch = 0;
         std::map<size_t, int> threads_epochs; // mapping between tid to their current seen epoch
         std::mutex lock; // ensures sequential behavior
-        std::vector<L*> buckets[3]; //the 3 buckets to keep the not deleted yet elements - of epoch, epoch-1, "epoch-2". current bucket is epoch % 3
-        float update_epoch_check_prob;
+        std::vector<L*> levels_buckets[3]; //the 3 levels_buckets to keep the not deleted yet elements - of epoch, epoch-1, "epoch-2". current bucket is epoch % 3
+        std::vector<PGMType*> pgms_buckets[3]; //the 3 levels_buckets to keep the not deleted yet elements - of epoch, epoch-1, "epoch-2". current bucket is epoch % 3
+        int CheckEveryNTimes = 10;
 
         int to_check_counter = 0;
 
@@ -47,10 +49,16 @@ namespace pgm {
                     }
                 }
                 if (b && tmp_epoch==epoch) {
-                    for (L* l : buckets[tmp_epoch % 3]) {
+                    for (L* l : levels_buckets[tmp_epoch % 3]) {
                         l->clear(); // free the levels
+                        delete l;
                     }
-                    buckets[tmp_epoch % 3].clear(); // clear the pointers also
+                    for (PGMType *p: pgms_buckets[tmp_epoch % 3]) {
+                        // delete p TODO
+                        delete p;
+                    }
+                    levels_buckets[tmp_epoch % 3].clear(); // clear the pointers also
+                    pgms_buckets[tmp_epoch % 3].clear(); // clear the pointers also
                     epoch = tmp_epoch + 1;
                     // no need to do atomic operation because this thread remains at tmp_epoch until it returns.
                     // epoch may already increase by at most 1 until we update.
@@ -63,9 +71,15 @@ namespace pgm {
 
         void delete_level(L *l) {
             lock.lock();
-            buckets[epoch % 3].push_back(l);
+            levels_buckets[epoch % 3].push_back(l);
             lock.unlock();
         }
 
-    }
+        void delete_pgm(PGMType *p) {
+            lock.lock();
+            pgms_buckets[epoch % 3].push_back(p);
+            lock.unlock();
+        }
+
+    };
 }

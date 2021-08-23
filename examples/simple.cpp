@@ -14,13 +14,13 @@
 #include <thread>
 #include <chrono>
 
-int n_threads = 4;
-int load = 500000;
+int n_threads = 1;
+int load = 1000000;
 
-void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, int k) {
+void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, int k, int tid) {
     for (int i=1; i<load; i++) {
         if (i % k == 0) {
-            dynamic_pgm->insert_or_assign(i, 1);
+            dynamic_pgm->insert_or_assign(i, 1, tid);
             std::cout<<"put "<< i << std::endl;
         }
     }
@@ -37,37 +37,41 @@ int main() {
     // Construct and bulk-load the Dynamic PGM-index
     pgm::DynamicPGMIndex<uint32_t, uint32_t> dynamic_pgm(data.begin(), data.end());
 
+    std::hash<std::thread::id> hasher;
     std::thread t[n_threads];
     for (int i = 0; i < n_threads; ++i) {
-        t[i] = std::thread(foo, &dynamic_pgm, i+29);
+        t[i] = std::thread(foo, &dynamic_pgm, i+29, hasher(t->get_id()));
     }
     std::cout << "Launched from the main\n";
     for (int i = 0; i < n_threads; ++i) {
         t[i].join();
     }
 
-
-    for (int j=1; j<load; j++) {
-        bool b = false;
-        for (int i=0; i<n_threads; i++) {
-            if (j % (i+29) == 0)
-                b = true;
-        }
-
-        bool found = !(dynamic_pgm.find(j) == NULL);
-
-        if (b && found) {
-            std::cout << "POSITIVE: " << j << " exists and found" << std::endl;
-        } else if (b && !found) {
-            std::cout << "NEGATIVE: "<< j << " exists and not found" << std::endl;
-        } else if (!b && found) {
-            std::cout << "NEGATIVE: "<< j << " not exists but found" << std::endl;
-        }
-
-    }
     auto end_time = std::chrono::high_resolution_clock::now();
     auto time = end_time - start_time;
     std::cout << "Elapsed " << time/std::chrono::milliseconds(1) << std::endl;
+
+//    for (int j=1; j<load; j++) {
+//        bool b = false;
+//        for (int i=0; i<n_threads; i++) {
+//            if (j % (i+29) == 0)
+//                b = true;
+//        }
+//
+//        bool found = !(dynamic_pgm.find(j) == NULL);
+//
+//        if (b && found) {
+//            std::cout << "POSITIVE: " << j << " exists and found" << std::endl;
+//        } else if (b && !found) {
+//            std::cout << "NEGATIVE: "<< j << " exists and not found" << std::endl;
+//        } else if (!b && found) {
+//            std::cout << "NEGATIVE: "<< j << " not exists but found" << std::endl;
+//        }
+//
+//    }
+//    auto end_time = std::chrono::high_resolution_clock::now();
+//    auto time = end_time - start_time;
+//    std::cout << "Elapsed " << time/std::chrono::milliseconds(1) << std::endl;
 
 
     //    // Insert some data

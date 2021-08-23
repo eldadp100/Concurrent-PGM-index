@@ -16,6 +16,9 @@
 #pragma once
 
 #include "pgm_index.hpp"
+#include "skip_list.hpp"
+#include "utils.hpp"
+#include "smr.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
@@ -30,6 +33,8 @@
 #include <utility>
 #include <vector>
 #include <mutex>
+
+
 /*
  * Notes:
  *  We don't support the key 0. Because ints are initialized to 0 it can cause problems
@@ -44,7 +49,7 @@ namespace pgm {
      * @tparam V the type of a value
      * @tparam PGMType the type of @ref PGMIndex to use in the container
      */
-    template<typename K, typename V, typename PGMType = PGMIndex<K, 16>>
+    template<typename K, typename V, typename PGMType = PGMIndex<K, 16>, typename Lock = SpinLock>
     class DynamicPGMIndex {
         class ItemA;
         class ItemB;
@@ -53,18 +58,22 @@ namespace pgm {
         using Item = std::conditional_t<std::is_pointer_v<V> || std::is_arithmetic_v<V>, ItemA, ItemB>;
         using Level = std::vector<Item>;
 
+        EBR<Level, PGMType> smr;
+
+        SkipList<K, V> buffer = SkipList<K, V>();
+
         const uint8_t base;                    ///< base^i is the maximum size of the ith level.
         const uint8_t min_level;               ///< Levels 0..min_level are combined into one large level.
         const uint8_t min_index_level;         ///< Minimum level on which an index is constructed.
         size_t buffer_max_size;                ///< Size of the combined upper levels, i.e. max_size(0) + ... + max_size(min_level).
         uint8_t used_levels;                   ///< Equal to 1 + last level whose size is greater than 0, or = min_level if no data.
         std::vector<Level*> levels;             ///< (i-min_level)th element is the data array at the ith level.
-        std::vector<std::mutex*> levels_mtx;   ///< mutexes from min_level
+        std::vector<Lock*> levels_mtx;   ///< mutexes from min_level
         std::vector<PGMType*> pgms;             ///< (i-min_index_level)th element is the index at the ith level.
         const Level &level(uint8_t level) const { return *levels[level - min_level]; }
         const PGMType &pgm(uint8_t level) const { return *pgms[level - min_index_level]; }
         Level &level(uint8_t level) { return *levels[level - min_level]; }
-        std::mutex *mtx(uint8_t level) { return levels_mtx[level - min_level]; }
+        Lock *mtx(uint8_t level) { return levels_mtx[level - min_level]; }
         PGMType &pgm(uint8_t level) { return *pgms[level - min_index_level]; }
         bool has_pgm(uint8_t level) const { return level >= min_index_level; }
         size_t max_size(uint8_t level) const { return size_t(1) << (level * ceil_log2(base)); }
@@ -144,7 +153,6 @@ namespace pgm {
 
 
         bool insert_to_buffer(const Item &new_item, typename Level::iterator insertion_point) {
-
             // key is already inside buffer - update value
             if (insertion_point != level(min_level).end() && (*insertion_point).first == new_item.first) {
                 // TODO: free *insertion_point? must be done with smr!
@@ -207,9 +215,10 @@ namespace pgm {
                 if (l != insert_level){
                     mtx(l)->unlock();
                 }
-                // _smr.delete_level_from_ptr(levels[l-min_level]));
+                smr.delete_level(levels[l-min_level]);
                 if (l >= min_index_level) {
                     // delete (with smr) pgm(l)
+                    smr.delete_pgm(pgms[l-min_index_level]);
                 }
             }
 
@@ -218,7 +227,7 @@ namespace pgm {
                 ++used_levels;
                 Level *new_level = new Level();
                 levels.push_back(new_level);
-                std::mutex *new_mtx = new std::mutex();
+                Lock *new_mtx = new Lock();
                 levels_mtx.push_back(new_mtx);
                 if (insert_level - min_index_level >= int(pgms.size()))
                     pgms.emplace_back();
@@ -235,7 +244,8 @@ namespace pgm {
             mtx(insert_level)->unlock();
         }
 
-        void insert(const Item &new_item) {
+        void insert(const Item &new_item, int tid) {
+            smr.on_start(tid);
             mtx(min_level)->lock();
             auto insertion_point_in_buffer = lower_bound_bl(level(min_level).begin(), level(min_level).end(), new_item);
             if (!insert_to_buffer(new_item, insertion_point_in_buffer)) {
@@ -273,7 +283,7 @@ namespace pgm {
 
             int starting_size = 32 - used_levels;
             for (int i=0; i<starting_size; ++i) {
-                std::mutex *new_mtx = new std::mutex();
+                Lock *new_mtx = new Lock();
                 levels_mtx.push_back(new_mtx);
                 Level *new_lvl = new Level();
                 levels.push_back(new_lvl);
@@ -298,7 +308,7 @@ namespace pgm {
             used_levels = std::max<uint8_t>(ceil_log_base(n), min_level) + 1;
             int starting_size = std::max<uint8_t>(used_levels, 32) - min_level + 1;
             for (int i=0; i<starting_size; ++i) {
-                std::mutex *new_mtx = new std::mutex();
+                Lock *new_mtx = new Lock();
                 levels_mtx.push_back(new_mtx);
                 Level *new_lvl = new Level();
                 levels.push_back(new_lvl);
@@ -337,13 +347,13 @@ namespace pgm {
          * @param key element key to insert or update
          * @param value element value to insert
          */
-        void insert_or_assign(const K &key, const V &value) { insert(Item(key, value)); }
+        void insert_or_assign(const K &key, const V &value, int tid) { insert(Item(key, value), tid); }
 
         /**
          * Removes the specified element from the container.
          * @param key key value of the element to remove
          */
-        void erase(const K &key) { insert(Item(key)); }
+        void erase(const K &key, int tid) { insert(Item(key),tid); }
 
         /**
          * Finds an element with key equivalent to @p key.
@@ -512,7 +522,7 @@ namespace pgm {
         size_t size_in_bytes() const {
             size_t bytes = levels.size() * sizeof(Level);
             for (auto &l: levels)
-                bytes += l.size() * sizeof(Item);
+                bytes += l->size() * sizeof(Item);
             return index_size_in_bytes() + bytes;
         }
 
@@ -523,7 +533,7 @@ namespace pgm {
         size_t index_size_in_bytes() const {
             size_t bytes = 0;
             for (auto &p: pgms)
-                bytes += p.size_in_bytes();
+                bytes += p->size_in_bytes();
             return bytes;
         }
 
@@ -653,8 +663,8 @@ namespace pgm {
 
     } // namespace internal
 
-    template<typename K, typename V, typename PGMType>
-    class DynamicPGMIndex<K, V, PGMType>::Iterator {
+    template<typename K, typename V, typename PGMType, typename Lock>
+    class DynamicPGMIndex<K, V, PGMType, Lock>::Iterator {
         friend class DynamicPGMIndex;
 
         using level_iterator = typename Level::const_iterator;
@@ -774,8 +784,8 @@ namespace pgm {
 
 #pragma pack(push, 1)
 
-    template<typename K, typename V, typename PGMType>
-    class DynamicPGMIndex<K, V, PGMType>::ItemA {
+    template<typename K, typename V, typename PGMType, typename Lock>
+            class DynamicPGMIndex<K, V, PGMType, Lock>::ItemA {
         const static V tombstone;
 
         template<typename T = V, std::enable_if_t<std::is_pointer_v<T>, int> = 0>
@@ -798,11 +808,11 @@ namespace pgm {
         bool deleted() const { return this->second == tombstone; }
     };
 
-    template<typename K, typename V, typename PGMType>
-    const V DynamicPGMIndex<K, V, PGMType>::ItemA::tombstone = get_tombstone<V>();
+    template<typename K, typename V, typename PGMType, typename Lock>
+    const V DynamicPGMIndex<K, V, PGMType, Lock>::ItemA::tombstone = get_tombstone<V>();
 
-    template<typename K, typename V, typename PGMType>
-    class DynamicPGMIndex<K, V, PGMType>::ItemB {
+    template<typename K, typename V, typename PGMType, typename Lock>
+    class DynamicPGMIndex<K, V, PGMType, Lock>::ItemB {
         bool flag;
 
     public:
