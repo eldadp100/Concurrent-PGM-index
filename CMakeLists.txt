@@ -27,19 +27,7 @@ if (OpenMP_CXX_FOUND)
     target_link_libraries(pgmindexlib INTERFACE OpenMP::OpenMP_CXX)
 endif ()
 
-if (BUILD_PGM_TUNER)
-    add_subdirectory(tuner)
-endif ()
-
-if (BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif ()
-
-if (BUILD_PGM_BENCHMARK)
-    add_subdirectory(benchmark)
-endif ()
-
-add_subdirectory(c-interface)
 
 enable_testing()
-add_subdirectory(test)
+add_subdirectory(tests/scalability)
+add_subdirectory(tests/correctness)

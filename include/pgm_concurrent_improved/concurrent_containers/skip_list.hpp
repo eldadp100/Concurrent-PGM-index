@@ -212,7 +212,9 @@ std::vector<Item> *SKIPLIST_TYPE::to_vector()
         succ = succ->forward[0].get(marked);
         if (!marked)
         {
-            ret->push_back(Item(x->key, x->value));
+            if (!x->value == 0) { // TODO - fix
+                ret->push_back(Item(x->key, x->value));
+            }
         }
     }
     return ret;

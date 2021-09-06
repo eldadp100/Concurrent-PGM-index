@@ -15,9 +15,9 @@
 
 #pragma once
 
-#include "pgm_index.hpp"
-#include "utils.hpp"
-#include "smr.hpp"
+#include "../pgm/pgm_index.hpp"
+#include "../pgm/utils.hpp"
+#include "../pgm/smr.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
@@ -32,7 +32,8 @@
 #include <utility>
 #include <vector>
 #include <mutex>
-
+#include "concurrent_buffer.hpp"
+#include <atomic>
 
 /*
  * Notes:
@@ -56,8 +57,12 @@ namespace pgm {
 
         using Item = std::conditional_t<std::is_pointer_v<V> || std::is_arithmetic_v<V>, ItemA, ItemB>;
         using Level = std::vector<Item>;
+        using BufferType = ConcurrentBSTBuffer<K,V, Item>;
 
         EBR<Level, PGMType> smr;
+        BufferType *buffer = new BufferType();
+        std::atomic<uint64_t> pending_buffer_insert = 0;
+        std::atomic<uint64_t> done_buffer_insert = 0;
 
         const uint8_t base;                    ///< base^i is the maximum size of the ith level.
         const uint8_t min_level;               ///< Levels 0..min_level are combined into one large level.
@@ -81,9 +86,10 @@ namespace pgm {
         void levels_merge(const Item &new_item,
                           uint8_t target,
                           size_t size_hint,
-                          typename Level::iterator insertion_point,
                           std::vector<Level*> *to_merge_levels
                           ) {
+            auto insertion_point = lower_bound_bl((*to_merge_levels)[0]->begin(), (*to_merge_levels)[0]->end(), new_item);
+
             Level *tmp_a = new Level(size_hint + max_size(target));
             Level *tmp_b = new Level(size_hint + max_size(target));
 
@@ -149,27 +155,26 @@ namespace pgm {
         }
 
 
-        bool insert_to_buffer(const Item &new_item, typename Level::iterator insertion_point) {
-            // key is already inside buffer - update value
-            if (insertion_point != level(min_level).end() && (*insertion_point).first == new_item.first) {
-                // TODO: free *insertion_point? must be done with smr!
-                *insertion_point = new_item; // update
-                mtx(min_level)->unlock();
-                return true;
-
+        bool insert_to_buffer(const Item &new_item) {
+            int buffer_size = pending_buffer_insert.fetch_add(1, std::memory_order_relaxed);
+            if (buffer_size >= buffer_max_size) {
+                if (buffer_size == buffer_max_size) {
+                    if (used_levels == min_level) {
+                        used_levels++;
+                    }
+                    return false;
+                } else {
+                    while ((buffer_size=pending_buffer_insert.fetch_add(1, std::memory_order_relaxed)) > buffer_max_size) {}
+                }
             }
-
-            // insert to buffer
-            if (level(min_level).size() < buffer_max_size) {
-                level(min_level).insert(insertion_point, new_item);
-                used_levels = used_levels == min_level ? min_level + 1 : used_levels;
-                mtx(min_level)->unlock();
-                return true;
-            }
-            return false;
+            buffer->insert(new_item.first, new_item.second);
+            done_buffer_insert.fetch_add(1, std::memory_order_relaxed);
+            return true;
         }
 
-        void insert_to_levels(const Item &new_item, typename Level::iterator insertion_point_in_buffer) {
+        void insert_to_levels(const Item &new_item) {
+            while (done_buffer_insert < buffer_max_size) {} // wait until all threads that start insert are done
+            done_buffer_insert = 0;
             std::pair<uint8_t, size_t>* insert_level_pair = find_insert_level();
             uint8_t insert_level = insert_level_pair->first;
             size_t slots_required = insert_level_pair->second;
@@ -179,13 +184,6 @@ namespace pgm {
             lock_multiple(min_level + 1, insert_level);
 
             // validate
-            // notice that there is already lock on buffer so there is no way it was emptied
-            //insertion_point_in_buffer = lower_bound_bl(level(min_level).begin(), level(min_level).end(), new_item);
-            //if (insert_to_buffer(new_item, insertion_point_in_buffer)) {
-            //    unlock_multiple(min_level, insert_level);
-            //    return;
-            //}
-
             std::pair<uint8_t, size_t>* val_insert_level_pair = find_insert_level();
             uint8_t val_insert_level = val_insert_level_pair->first;
             slots_required = insert_level_pair->second;
@@ -204,7 +202,13 @@ namespace pgm {
 
             // save_levels
             std::vector<Level*> to_merge_levels;
-            for (int l=min_level; l<=insert_level; ++l) {
+            BufferType *tmp_buffer_ptr = buffer;
+            buffer = new BufferType();
+            pending_buffer_insert = 0;
+            Level *buffer_data = tmp_buffer_ptr->to_vector();
+            to_merge_levels.push_back(buffer_data);
+
+            for (int l=min_level+1; l<=insert_level; ++l) {
                 to_merge_levels.push_back(levels[l-min_level]);
                 levels[l - min_level] = new Level();
                 if (l >= min_index_level) {
@@ -224,6 +228,7 @@ namespace pgm {
             if (need_new_level) {
                 ++used_levels;
                 Level *new_level = new Level();
+                new_level->reserve(max_size(used_levels));
                 levels.push_back(new_level);
                 to_merge_levels.push_back(new_level);
                 Lock *new_mtx = new Lock();
@@ -239,17 +244,14 @@ namespace pgm {
             }
 
 
-            levels_merge(new_item, insert_level, slots_required, insertion_point_in_buffer, &to_merge_levels);
-            Level l = level(4);
+            levels_merge(new_item, insert_level, slots_required, &to_merge_levels);
             mtx(insert_level)->unlock();
         }
 
         void insert(const Item &new_item, int tid) {
             smr.on_start(tid);
-            mtx(min_level)->lock();
-            auto insertion_point_in_buffer = lower_bound_bl(level(min_level).begin(), level(min_level).end(), new_item);
-            if (!insert_to_buffer(new_item, insertion_point_in_buffer)) {
-                insert_to_levels(new_item, insertion_point_in_buffer);
+            if (!insert_to_buffer(new_item)) {
+                insert_to_levels(new_item);
             }
         }
 
@@ -281,16 +283,19 @@ namespace pgm {
             for (auto j = 0; j <= min_level; ++j)
                 buffer_max_size += max_size(j);
 
-            int starting_size = 32 - used_levels;
-            for (int i=0; i<starting_size; ++i) {
-                Lock *new_mtx = new Lock();
-                levels_mtx.push_back(new_mtx);
-                Level *new_lvl = new Level();
-                levels.push_back(new_lvl);
-            }
+//            int starting_size = 32 - used_levels;
+//            for (int i=0; i<starting_size; ++i) {
+//                Lock *new_mtx = new Lock();
+//                levels_mtx.push_back(new_mtx);
+//                Level *new_lvl = new Level();
+//                levels.push_back(new_lvl);
+//            }
+
+            Level *new_lvl = new Level();
+            levels.push_back(new_lvl);
             level(min_level).reserve(buffer_max_size);
-            for (uint8_t i = min_level + 1; i < max_fully_allocated_level(); ++i)
-                level(i).reserve(max_size(i));
+//            for (uint8_t i = min_level + 1; i < max_fully_allocated_level(); ++i)
+//                level(i).reserve(max_size(i));
         }
 
         /**
@@ -301,45 +306,6 @@ namespace pgm {
          * @param buffer_level determines the size of level 0, equal to the sum of base^i for i = 0, ..., buffer_level
          * @param index_level the minimum level at which an index is constructed to speed up searches
          */
-        template<typename Iterator>
-        DynamicPGMIndex(Iterator first, Iterator last, uint8_t base = 8, uint8_t buffer_level = 0, uint8_t index_level = 0)
-        : DynamicPGMIndex(base, buffer_level, index_level) {
-            size_t n = std::distance(first, last);
-            used_levels = std::max<uint8_t>(ceil_log_base(n), min_level) + 1;
-            int starting_size = std::max<uint8_t>(used_levels, 32) - min_level + 1;
-            for (int i=0; i<starting_size; ++i) {
-                Lock *new_mtx = new Lock();
-                levels_mtx.push_back(new_mtx);
-                Level *new_lvl = new Level();
-                levels.push_back(new_lvl);
-            }
-            level(min_level).reserve(buffer_max_size);
-            for (uint8_t i = min_level + 1; i < max_fully_allocated_level(); ++i)
-                level(i).reserve(max_size(i));
-
-            if (n == 0) {
-                used_levels = min_level;
-                return;
-            }
-
-            // Copy only the first of each group of pairs with same key value
-            auto &target = level(used_levels - 1);
-            target.resize(n);
-            auto out = target.begin();
-            *out++ = Item(first->first, first->second);
-            while (++first != last) {
-                if (first->first < std::prev(out)->first)
-                    throw std::invalid_argument("Range is not sorted");
-                if (first->first != std::prev(out)->first)
-                    *out++ = Item(first->first, first->second);
-            }
-            target.resize(std::distance(target.begin(), out));
-
-            if (has_pgm(used_levels - 1)) {
-                pgms = decltype(pgms)(used_levels - min_index_level);
-                pgm(used_levels - 1) = PGMType(target.begin(), target.end());
-            }
-        }
 
         /**
          * Inserts an element into the container if @p key does not exists in the container. If @p key already exists, the
@@ -361,21 +327,23 @@ namespace pgm {
          * @return an iterator to an element with key equivalent to @p key. If no such element is found, end() is returned
          */
         std::pair<K, V> *find(K key, int tid) {
-            smr.on_start(tid);
+//            smr.on_start(tid);
+            auto br = buffer->find(key);
+            if (br != NULL) {
+                return br;
+            }
+
             Level *l;
             PGMType *p;
-            for (auto i = min_level; i < used_levels; ++i) {
+            for (auto i = min_level + 1; i < used_levels; ++i) {
                 mtx(i)->lock();
                 l = levels[i - min_level];
                 if (has_pgm(i))
                     p = pgms[i - min_level];
 
+                mtx(i)->unlock();
                 if (l->empty()) {
-                    mtx(i)->unlock();
                     continue;
-                }
-                if (i != min_level){
-                    mtx(i)->unlock();
                 }
                 auto first = l->begin();
                 auto last = l->end();
@@ -389,12 +357,8 @@ namespace pgm {
                 if (it != l->end() && it->first == key) {
                     // auto ret = it->second == 1 ? new std::pair<K, V>(it->first, it->second) : NULL;
                     auto ret = it->deleted() ? NULL : new std::pair<K, V>(it->first, it->second);
-                    if (i == min_level)
-                        mtx(i)->unlock();
                     return ret;
                 }
-                if (i == min_level)
-                    mtx(i)->unlock();
             }
             return NULL;
         }
@@ -415,7 +379,7 @@ namespace pgm {
             Level *l;
             PGMType *p;
 
-            for (auto i = min_level; i < used_levels; ++i) {
+            for (auto i = min_level+1; i < used_levels; ++i) {
                 mtx(i)->lock();
                 l = levels[i - min_level];
                 if (has_pgm(i))
