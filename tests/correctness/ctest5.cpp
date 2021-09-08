@@ -14,11 +14,12 @@ int max_range_size = 256;
 bool b = true;
 
 void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, std::vector<std::pair<uint32_t, uint32_t>>* range_data, std::vector<std::pair<uint32_t, uint32_t>>* insert_data, int tid) {
+    uint32_t r;
     for (int i=0; i<insert_data->size(); ++i) {
         dynamic_pgm->insert_or_assign((*insert_data)[i].first, (*insert_data)[i].second, tid);
         auto range_found = dynamic_pgm->range((*range_data)[i].first,(*range_data)[i].first + (*range_data)[i].second, tid);
         for (uint32_t a=(*range_data)[i].first; a <= (*range_data)[i].first + (*range_data)[i].second; ++a) {
-            if (dynamic_pgm->find(a, tid) == NULL) {
+            if (!dynamic_pgm->find(a, r, tid)) {
                 b = false; // the range is not full
             }
         }

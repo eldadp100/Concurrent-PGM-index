@@ -84,10 +84,10 @@ namespace pgm {
 
     // BEGIN SKIPLIST IMPLEMENTATION
 #define SKIPLIST_TEMPLATE_ARGS \
-template <typename KeyType, typename ValueType, typename Item>
+template <typename KeyType, typename Item>
 
 #define SKIPLIST_TYPE \
-SkipList<KeyType, ValueType, Item>
+SkipList<KeyType, Item>
 
 SKIPLIST_TEMPLATE_ARGS
 class SkipList
@@ -96,7 +96,7 @@ class SkipList
             struct SkipNode
                     {
                 // Constructor for standard nodes
-                SkipNode(const KeyType k, const ValueType &v, const int forward_size) : key(k), value(v), top_level(forward_size)
+                SkipNode(const KeyType k, const Item &v, const int forward_size) : key(k), value(v), top_level(forward_size)
                 {
                     intialize_forward(forward_size, nullptr);
                 }
@@ -121,7 +121,7 @@ class SkipList
                 }
 
                 KeyType key;
-                ValueType value;
+                Item value;
 
                 int top_level;
 
@@ -137,10 +137,10 @@ class SkipList
                 delete NIL;
             };
 
-            ValueType *find_wait_free(const KeyType search_key) const;
+            Item *find_wait_free(const KeyType search_key) const;
             bool find_with_gc(const KeyType search_key, SkipNode **preds, SkipNode **succs); // not const, will delete marked nodes
 
-            void insert(const KeyType key, const ValueType &val);
+            void insert(const KeyType key, const Item &val);
             bool remove(const KeyType key);
 
             void print(std::ostream &os) const;
@@ -212,9 +212,8 @@ std::vector<Item> *SKIPLIST_TYPE::to_vector()
         succ = succ->forward[0].get(marked);
         if (!marked)
         {
-            if (!x->value == 0) { // TODO - fix
-                ret->push_back(Item(x->key, x->value));
-            }
+            ret->push_back(x->value);
+
         }
     }
     return ret;
@@ -277,7 +276,7 @@ bool SKIPLIST_TYPE::find_with_gc(const KeyType search_key, SkipNode **preds, Ski
 }
 
 SKIPLIST_TEMPLATE_ARGS
-ValueType *SKIPLIST_TYPE::find_wait_free(const KeyType search_key) const
+Item* SKIPLIST_TYPE::find_wait_free(const KeyType search_key) const
 {
     bool marked = false;
     SkipNode *pred = head, *curr = nullptr, *succ = nullptr;
@@ -304,11 +303,14 @@ ValueType *SKIPLIST_TYPE::find_wait_free(const KeyType search_key) const
             }
         }
     }
-    return (curr->key == search_key ? &curr->value : nullptr);
+    if (curr->key == search_key) {
+        return &(curr->value);
+    }
+    return NULL;
 }
 
 SKIPLIST_TEMPLATE_ARGS
-void SKIPLIST_TYPE::insert(const KeyType key, const ValueType &val)
+void SKIPLIST_TYPE::insert(const KeyType key, const Item &val)
 {
     int top_level = random_level();
     SkipNode *preds[max_levels + 1];

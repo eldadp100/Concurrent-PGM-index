@@ -144,7 +144,7 @@ namespace pgm {
     template <typename K, typename V, typename Item>
     class ConcurrentSkipListBuffer {
     private:
-        SkipList<K,V,Item> data;
+        SkipList<K,Item> data;
     public:
 
         ConcurrentSkipListBuffer() {
@@ -154,13 +154,13 @@ namespace pgm {
         ~ConcurrentSkipListBuffer() {
         }
 
-        void insert(K key, V value) {
-            data.insert(key, value);
+        void insert(Item x) {
+            data.insert(x.first, x);
         }
 
-        std::pair<K,V> *find(K key) {
+        Item *find(K key) {
             auto a = data.find_wait_free(key);
-            return a == NULL ? NULL : new std::pair<K,V> (key, *a);
+            return a == NULL ? NULL : a;
         }
 
         std::vector<Item> *to_vector() {

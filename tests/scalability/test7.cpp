@@ -11,9 +11,10 @@
 #include <fstream>
 
 void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, std::vector<std::pair<uint32_t, uint32_t>>* find_data, std::vector<std::pair<uint32_t, uint32_t>>* delete_data, std::vector<std::pair<uint32_t, uint32_t>>* insert_data, int tid) {
+    uint32_t r;
     for (int i=0; i<insert_data->size(); ++i) {
         dynamic_pgm->insert_or_assign((*insert_data)[i].first, (*insert_data)[i].second, tid);
-        dynamic_pgm->find((*find_data)[i].first, tid);
+        dynamic_pgm->find((*find_data)[i].first, r, tid);
         dynamic_pgm->erase((*delete_data)[i].first, tid);
     }
 }

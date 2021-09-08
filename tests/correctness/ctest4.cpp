@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <algorithm>
-#include "../include/pgm/pgm_index_dynamic.hpp"
+#include "../include/pgm_concurrent_improved/pgm_index_dynamic.hpp"
 #include <thread>
 #include <chrono>
 
@@ -42,14 +42,12 @@ int main() {
     }
 
     bool ret = true;
+    uint32_t r;
     for (int i = 0; i < n_threads; ++i) {
         for (auto item: *threads_data[i]) {
-            auto a = dynamic_pgm.find(item.first, 0);
-            if (a != NULL && a->first == item.first) {
+            if (dynamic_pgm.find(item.first, r, 0)) {
                 std::cout << "FAIL on " << item.first << " Deleted but found \n";
                 ret = false;
-            } else {
-//                std::cout << "SUCCESS on " << item.first << " \n";
             }
         }
     }

@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <new>
@@ -50,11 +51,9 @@ namespace pgm {
      */
     template<typename K, typename V, typename PGMType = PGMIndex<K, 16>, typename Lock = SpinLock>
     class DynamicPGMIndex {
-        class ItemA;
-        class ItemB;
+        class Item;
         class Iterator;
 
-        using Item = std::conditional_t<std::is_pointer_v<V> || std::is_arithmetic_v<V>, ItemA, ItemB>;
         using Level = std::vector<Item>;
 
         EBR<Level, PGMType> smr;
@@ -95,7 +94,7 @@ namespace pgm {
             tmp_a->resize(std::distance(tmp_a->begin(), it));
 
             // Merge subsequent to_merge_levels
-            uint8_t merge_limit = (*to_merge_levels)[target - min_level]->empty() ? target - 1 : target;
+            uint8_t merge_limit = (*to_merge_levels)[target - min_level] == NULL ? target - 1 : target;
             for (uint8_t i = 1 + min_level; i <= merge_limit; ++i, alternate = !alternate) {
                 auto tmp_begin = (alternate ? tmp_a : tmp_b)->begin();
                 auto tmp_end = (alternate ? tmp_a : tmp_b)->end();
@@ -152,11 +151,9 @@ namespace pgm {
         bool insert_to_buffer(const Item &new_item, typename Level::iterator insertion_point) {
             // key is already inside buffer - update value
             if (insertion_point != level(min_level).end() && (*insertion_point).first == new_item.first) {
-                // TODO: free *insertion_point? must be done with smr!
                 *insertion_point = new_item; // update
                 mtx(min_level)->unlock();
                 return true;
-
             }
 
             // insert to buffer
@@ -223,7 +220,7 @@ namespace pgm {
 
             if (need_new_level) {
                 ++used_levels;
-                Level *new_level = new Level();
+                Level *new_level = NULL;
                 levels.push_back(new_level);
                 to_merge_levels.push_back(new_level);
                 Lock *new_mtx = new Lock();
@@ -360,7 +357,7 @@ namespace pgm {
          * @param key key value of the element to search for
          * @return an iterator to an element with key equivalent to @p key. If no such element is found, end() is returned
          */
-        std::pair<K, V> *find(K key, int tid) {
+        bool find(K key, V& ret, int tid) {
             smr.on_start(tid);
             Level *l;
             PGMType *p;
@@ -386,17 +383,21 @@ namespace pgm {
                 }
 
                 auto it = lower_bound_bl(first, last, key);
-                if (it != l->end() && it->first == key) {
+                if (it->first == key) {
                     // auto ret = it->second == 1 ? new std::pair<K, V>(it->first, it->second) : NULL;
-                    auto ret = it->deleted() ? NULL : new std::pair<K, V>(it->first, it->second);
+                    // auto ret = it->deleted() ? NULL : new std::pair<K, V>(it->first, it->second);
                     if (i == min_level)
                         mtx(i)->unlock();
-                    return ret;
+                    if (it->deleted()) {
+                        return false;
+                    }
+                    memcpy(&ret, &(it->second), sizeof(V)); // ignore memcpy return value
+                    return true;
                 }
                 if (i == min_level)
                     mtx(i)->unlock();
             }
-            return NULL;
+            return false;
         }
 
         /**
@@ -830,47 +831,20 @@ namespace pgm {
 #pragma pack(push, 1)
 
     template<typename K, typename V, typename PGMType, typename Lock>
-            class DynamicPGMIndex<K, V, PGMType, Lock>::ItemA {
-        const static V tombstone;
-
-        template<typename T = V, std::enable_if_t<std::is_pointer_v<T>, int> = 0>
-                static V get_tombstone() { return new std::remove_pointer_t<V>(); }
-                template<typename T = V, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
-                        static V get_tombstone() { return std::numeric_limits<V>::max(); }
-
+    class DynamicPGMIndex<K, V, PGMType, Lock>::Item {
+    bool flag;
     public:
         K first;
         V second;
 
-        ItemA() { /* do not (default-)initialize for a more efficient std::vector<ItemA>::resize */ }
-        explicit ItemA(const K &key) : first(key), second(tombstone) {}
-        explicit ItemA(const K &key, const V &value) : first(key), second(value) {
-            if (second == tombstone)
-                throw std::invalid_argument("The specified value is reserved and cannot be used.");
-        }
-
-        operator K() const { return first; }
-        bool deleted() const { return this->second == tombstone; }
-    };
-
-    template<typename K, typename V, typename PGMType, typename Lock>
-    const V DynamicPGMIndex<K, V, PGMType, Lock>::ItemA::tombstone = get_tombstone<V>();
-
-    template<typename K, typename V, typename PGMType, typename Lock>
-    class DynamicPGMIndex<K, V, PGMType, Lock>::ItemB {
-        bool flag;
-
-    public:
-        K first;
-        V second;
-
-        ItemB() { /* do not (default-)initialize for a more efficient std::vector<ItemB>::resize */ }
-        explicit ItemB(const K &key) : flag(true), first(key), second() {}
-        explicit ItemB(const K &key, const V &value) : flag(false), first(key), second(value) {}
-
+        Item() { /* do not (default-)initialize for a more efficient std::vector<ItemA>::resize */ }
+        explicit Item(const K &key) : first(key), second(), flag(true) {}
+        explicit Item(const K &key, const V &value) : first(key), second(value), flag(false) {}
         operator K() const { return first; }
         bool deleted() const { return flag; }
     };
+
+
 
 #pragma pack(pop)
 

@@ -9,8 +9,9 @@
 #include <chrono>
 
 void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, std::vector<std::pair<uint32_t, uint32_t>>* data, int tid) {
+    uint32_t r;
     for (auto i: *data) {
-        dynamic_pgm->find(i.first, tid);
+        dynamic_pgm->find(i.first, r, tid);
     }
 }
 

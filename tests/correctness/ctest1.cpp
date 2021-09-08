@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <algorithm>
-#include "../include/pgm/pgm_index_dynamic.hpp"
+#include "../include/pgm_concurrent_improved/pgm_index_dynamic.hpp"
 #include <thread>
 #include <chrono>
 
