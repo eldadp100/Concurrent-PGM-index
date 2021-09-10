@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
     int n_threads = atoi(argv[1]);
     int load = atoi(argv[2]);
 
-    pgm::DynamicPGMIndex<uint32_t, uint32_t> dynamic_pgm(8, 4);
+    pgm::DynamicPGMIndex<uint32_t, uint32_t> dynamic_pgm(4, 2);
     int thread_load = load / n_threads;
     // generate data for threads
     std::vector<std::pair<uint32_t, uint32_t>> data(load);

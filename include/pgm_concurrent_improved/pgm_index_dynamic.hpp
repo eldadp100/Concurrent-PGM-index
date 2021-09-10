@@ -56,12 +56,14 @@ namespace pgm {
         class Iterator;
 
         using Level = std::vector<Item>;
-        using BufferType = ConcurrentSkipListBuffer<K,V, Item>;
+        using BufferType = ConcurrentBSTBuffer<K,V, Item>;
 
         EBR<Level, PGMType> smr;
-        BufferType *buffer = new BufferType();
+        BufferType* buffer = new BufferType();
         std::atomic<uint64_t> pending_buffer_insert = 0;
         std::atomic<uint64_t> done_buffer_insert = 0;
+
+        std::mutex merge_lock;
 
         const uint8_t base;                    ///< base^i is the maximum size of the ith level.
         const uint8_t min_level;               ///< Levels 0..min_level are combined into one large level.
@@ -172,6 +174,7 @@ namespace pgm {
         void insert_to_levels(const Item &new_item) {
             while (done_buffer_insert < buffer_max_size) {} // wait until all threads that start insert are done
             done_buffer_insert = 0;
+            merge_lock.lock();
             std::pair<uint8_t, size_t>* insert_level_pair = find_insert_level();
             uint8_t insert_level = insert_level_pair->first;
             size_t slots_required = insert_level_pair->second;
@@ -200,10 +203,7 @@ namespace pgm {
             // save_levels
             std::vector<Level*> to_merge_levels;
             BufferType *tmp_buffer_ptr = buffer;
-            buffer = new BufferType();
-            pending_buffer_insert = 0;
-            Level *buffer_data = tmp_buffer_ptr->to_vector();
-            to_merge_levels.push_back(buffer_data);
+            to_merge_levels.push_back(NULL);
 
             for (int l=min_level+1; l<=insert_level; ++l) {
                 to_merge_levels.push_back(levels[l-min_level]);
@@ -220,7 +220,10 @@ namespace pgm {
                     smr.delete_pgm(pgms[l-min_index_level]);
                 }
             }
-
+            Level *buffer_data = tmp_buffer_ptr->to_vector();
+            to_merge_levels[0] = buffer_data;
+            buffer = new BufferType();
+            pending_buffer_insert = 0;
 
             if (need_new_level) {
                 ++used_levels;
@@ -234,15 +237,14 @@ namespace pgm {
                     pgms.push_back(NULL);
                 }
 
-
                 levels_mtx.back()->lock();
                 mtx(insert_level)->unlock();
                 insert_level++;
             }
 
-
             levels_merge(new_item, insert_level, slots_required, &to_merge_levels);
             mtx(insert_level)->unlock();
+            merge_lock.unlock();
         }
 
         void insert(const Item &new_item, int tid) {

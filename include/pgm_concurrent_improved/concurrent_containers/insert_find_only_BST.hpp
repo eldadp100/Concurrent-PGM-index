@@ -1,5 +1,5 @@
 #include <mutex>
-
+#include <atomic>
 
 namespace bst {
 
@@ -11,46 +11,16 @@ namespace bst {
             std::mutex node_lock;
             K key;
             V value;
-            Node *left = NULL;
-            Node *right = NULL;
-            bool is_root;
+            std::atomic<Node*> left = NULL;
+            std::atomic<Node*> right = NULL;
 
-            Node(K _key, V _value) {
+            Node(K _key, V& _value) {
                 key = _key;
                 value = _value;
             }
 
-            Node() {
-                is_root = true;
-            }
+            Node() { }
 
-            bool unsafe_insert_right(Node* child) {
-                if (right == NULL) {
-                    right = child;
-                    return true;
-                }
-                return false;
-            }
-
-            bool unsafe_insert_left(Node* child) {
-                if (left == NULL) {
-                    left = child;
-                    return true;
-                }
-                return false;
-            }
-
-            // pre condition - value = v
-            bool safe_update(V v) {
-                node_lock.lock();
-                if (value != v) {
-                    node_lock.unlock();
-                    return false;
-                }
-                value = v;
-                node_lock.unlock();
-                return true;
-            }
         };
 
         Node *root = new Node();
@@ -73,27 +43,26 @@ namespace bst {
         void insert(K k, V v) {
             Node *new_node = new Node(k, v);
             Node *prev = root;
-            Node *curr = root->right;
+            Node *curr = root->right.load();
             while (true) {
                 while (curr != NULL) {
                     if (k == curr->key) {
-                        if (curr->safe_update(v)) {
-                            return;
-                        }
+                        curr->value = v;
+                        return;
                     } else if (k > curr->key) {
                         prev = curr;
-                        curr = curr -> right;
+                        curr = curr -> right.load();
                     } else {
                         prev = curr;
-                        curr = curr -> left;
+                        curr = curr -> left.load();
                     }
                 }
                 prev->node_lock.lock();
                 if ((k>prev->key && prev->right == NULL) || (k<prev->key && prev->left == NULL)){
                     if (k>prev->key) {
-                        prev->unsafe_insert_right(new_node);
+                        prev->right.store(new_node) ;
                     } else {
-                        prev->unsafe_insert_left((new_node));
+                        prev->left.store(new_node);
                     }
                     prev->node_lock.unlock();
                     return;
@@ -103,11 +72,11 @@ namespace bst {
             }
         }
 
-        std::pair<K,V> *find(K k) {
+        Item *find(K k) {
             Node *curr = root->right;
             while (curr != NULL) {
                 if (k == curr->key) {
-                    return new std::pair<K, V>(k, curr->value);
+                    return &curr->value;
                 } else if (k > curr->key) {
                     curr = curr -> right;
                 } else {
@@ -122,11 +91,12 @@ namespace bst {
             to_vector_rec(root->right, ret);
             return ret;
         }
+
         void to_vector_rec(Node* the_root, std::vector<Item> *ret) {
             if (the_root == NULL)
                 return;
             to_vector_rec(the_root->left, ret);
-            ret->push_back(*(new Item(the_root->key,the_root->value)));
+            ret->push_back(the_root->value);
             to_vector_rec(the_root->right, ret);
         }
     };

@@ -227,7 +227,7 @@ public:
      * @param key element key to insert or update
      * @param value element value to insert
      */
-    void insert_or_assign(const K &key, const V &value) { insert(Item(key, value)); }
+    void insert_or_assign(const K &key, const V &value, int tid) { insert(Item(key, value)); }
 
     /**
      * Removes the specified element from the container.
@@ -267,7 +267,7 @@ public:
      * @param hi upper endpoint of the range query, must be greater than or equal to @p lo
      * @return a vector of key-value pairs satisfying the range query
      */
-    std::vector<std::pair<K, V>> range(const K &lo, const K &hi) const {
+    std::vector<std::pair<K, V>> range(const K &lo, const K &hi, int tid) const {
         if (lo > hi)
             throw std::invalid_argument("lo > hi");
 

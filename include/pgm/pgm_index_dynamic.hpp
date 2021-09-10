@@ -298,45 +298,6 @@ namespace pgm {
          * @param buffer_level determines the size of level 0, equal to the sum of base^i for i = 0, ..., buffer_level
          * @param index_level the minimum level at which an index is constructed to speed up searches
          */
-        template<typename Iterator>
-        DynamicPGMIndex(Iterator first, Iterator last, uint8_t base = 8, uint8_t buffer_level = 0, uint8_t index_level = 0)
-        : DynamicPGMIndex(base, buffer_level, index_level) {
-            size_t n = std::distance(first, last);
-            used_levels = std::max<uint8_t>(ceil_log_base(n), min_level) + 1;
-            int starting_size = std::max<uint8_t>(used_levels, 32) - min_level + 1;
-            for (int i=0; i<starting_size; ++i) {
-                Lock *new_mtx = new Lock();
-                levels_mtx.push_back(new_mtx);
-                Level *new_lvl = new Level();
-                levels.push_back(new_lvl);
-            }
-            level(min_level).reserve(buffer_max_size);
-            for (uint8_t i = min_level + 1; i < max_fully_allocated_level(); ++i)
-                level(i).reserve(max_size(i));
-
-            if (n == 0) {
-                used_levels = min_level;
-                return;
-            }
-
-            // Copy only the first of each group of pairs with same key value
-            auto &target = level(used_levels - 1);
-            target.resize(n);
-            auto out = target.begin();
-            *out++ = Item(first->first, first->second);
-            while (++first != last) {
-                if (first->first < std::prev(out)->first)
-                    throw std::invalid_argument("Range is not sorted");
-                if (first->first != std::prev(out)->first)
-                    *out++ = Item(first->first, first->second);
-            }
-            target.resize(std::distance(target.begin(), out));
-
-            if (has_pgm(used_levels - 1)) {
-                pgms = decltype(pgms)(used_levels - min_index_level);
-                pgm(used_levels - 1) = PGMType(target.begin(), target.end());
-            }
-        }
 
         /**
          * Inserts an element into the container if @p key does not exists in the container. If @p key already exists, the
