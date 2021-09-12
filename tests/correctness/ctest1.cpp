@@ -4,11 +4,11 @@
 #include <cstdlib>
 #include <iostream>
 #include <algorithm>
-#include "../include/pgm/pgm_index_dynamic.hpp"
+#include "../include/pgm_concurrent_improved/pgm_index_dynamic.hpp"
 #include <thread>
 #include <chrono>
 
-int n_threads = 2;
+int n_threads = 8;
 int load = 1000000;
 
 void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, std::vector<std::pair<uint32_t, uint32_t>>* data, int tid) {
@@ -39,9 +39,10 @@ int main() {
     }
 
     bool ret = true;
+    uint32_t r;
     for (int i = 0; i < n_threads; ++i) {
         for (auto item: *threads_data[i]) {
-            if (dynamic_pgm.find(item.first, 0) == NULL) {
+            if (!dynamic_pgm.find(item.first, r, 0)) {
                 std::cout << "FAIL on " << item.first << " Inserted but not found\n";
                 ret = false;
             }

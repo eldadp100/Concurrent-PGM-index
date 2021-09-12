@@ -13,9 +13,10 @@ int load = 1000000;
 bool b = true;
 
 void foo(pgm::DynamicPGMIndex<uint32_t, uint32_t>* dynamic_pgm, std::vector<std::pair<uint32_t, uint32_t>>* find_data, std::vector<std::pair<uint32_t, uint32_t>>* insert_data, int tid) {
+    uint32_t r;
     for (int i=0; i<insert_data->size(); ++i) {
         dynamic_pgm->insert_or_assign((*insert_data)[i].first, (*insert_data)[i].second, tid);
-        if (dynamic_pgm->find((*find_data)[i].first, tid) == NULL) {
+        if (!dynamic_pgm->find((*find_data)[i].first, r, tid)) {
             b = false; // legal in concurrent setting, atomic isn't necessary
             std::cout << "FAIL on "<< (*find_data)[i].first << "\n";
         }

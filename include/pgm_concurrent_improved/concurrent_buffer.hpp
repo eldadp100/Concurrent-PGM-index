@@ -39,9 +39,9 @@ namespace pgm {
             delete data;
         }
 
-        void insert(K key, V value) {
+        void insert(Item x) {
             global_lock.lock();
-            data.push_back(Item(key, value));
+            data.push_back(x);
             global_lock.unlock();
         }
 
@@ -82,8 +82,7 @@ namespace pgm {
             delete data;
         }
 
-        void insert(K key, V value) {
-            Item new_item = *(new Item(key, value));
+        void insert(Item x) {
             global_lock.lock();
             if (data.size() != 0) {
 
@@ -94,22 +93,22 @@ namespace pgm {
                     auto half = n / 2;
                     __builtin_prefetch(&*(first + half / 2), 0, 0);
                     __builtin_prefetch(&*(first + half + half / 2), 0, 0);
-                    first = first[half] < key ? first + half : first;
+                    first = first[half] < x.first ? first + half : first;
                     n -= half;
                 }
-                auto insertion_point = first + (*first < key);
-                if (insertion_point != data.end() && (*insertion_point).first == new_item.first) {
-                    *insertion_point = new_item; // update
+                auto insertion_point = first + (*first < x.first);
+                if (insertion_point != data.end() && (*insertion_point).first == x.first) {
+                    *insertion_point = x; // update
                     global_lock.unlock();
                     return;
                 }
 
                 // insert to buffer
-                data.insert(insertion_point, new_item);
+                data.insert(insertion_point, x);
                 global_lock.unlock();
             }
             else {
-                data.push_back(new_item);
+                data.push_back(x);
                 global_lock.unlock();
             }
 
@@ -144,7 +143,7 @@ namespace pgm {
     template <typename K, typename V, typename Item>
     class ConcurrentSkipListBuffer {
     private:
-        SkipList<K,V,Item> data;
+        SkipList<K,Item> data;
     public:
 
         ConcurrentSkipListBuffer() {
@@ -154,13 +153,13 @@ namespace pgm {
         ~ConcurrentSkipListBuffer() {
         }
 
-        void insert(K key, V value) {
-            data.insert(key, value);
+        void insert(Item x) {
+            data.insert(x.first, x);
         }
 
-        std::pair<K,V> *find(K key) {
+        Item *find(K key) {
             auto a = data.find_wait_free(key);
-            return a == NULL ? NULL : new std::pair<K,V> (key, *a);
+            return a == NULL ? NULL : a;
         }
 
         std::vector<Item> *to_vector() {
@@ -173,7 +172,7 @@ namespace pgm {
     template <typename K, typename V, typename Item>
     class ConcurrentBSTBuffer {
     private:
-        bst::BST<K,V,Item> data;
+        bst::BST<K,Item,Item> data;
     public:
 
         ConcurrentBSTBuffer() {
@@ -183,16 +182,19 @@ namespace pgm {
         ~ConcurrentBSTBuffer() {
         }
 
-        void insert(K key, V value) {
-            data.insert(key, value);
+        void insert(Item x) {
+            data.insert(x.first, x);
         }
 
-        std::pair<K,V> *find(K key) {
+        Item *find(K key) {
             return data.find(key);
         }
 
         std::vector<Item> *to_vector() {
             return data.to_vector();
+        }
+        std::vector<Item> *to_vector_part_1() {
+            return data.to_vector_part_1();
         }
     };
 

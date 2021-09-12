@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <new>
@@ -50,11 +51,9 @@ namespace pgm {
      */
     template<typename K, typename V, typename PGMType = PGMIndex<K, 16>, typename Lock = SpinLock>
     class DynamicPGMIndex {
-        class ItemA;
-        class ItemB;
+        class Item;
         class Iterator;
 
-        using Item = std::conditional_t<std::is_pointer_v<V> || std::is_arithmetic_v<V>, ItemA, ItemB>;
         using Level = std::vector<Item>;
 
         EBR<Level, PGMType> smr;
@@ -95,7 +94,7 @@ namespace pgm {
             tmp_a->resize(std::distance(tmp_a->begin(), it));
 
             // Merge subsequent to_merge_levels
-            uint8_t merge_limit = (*to_merge_levels)[target - min_level]->empty() ? target - 1 : target;
+            uint8_t merge_limit = (*to_merge_levels)[target - min_level] == NULL ? target - 1 : target;
             for (uint8_t i = 1 + min_level; i <= merge_limit; ++i, alternate = !alternate) {
                 auto tmp_begin = (alternate ? tmp_a : tmp_b)->begin();
                 auto tmp_end = (alternate ? tmp_a : tmp_b)->end();
@@ -152,11 +151,9 @@ namespace pgm {
         bool insert_to_buffer(const Item &new_item, typename Level::iterator insertion_point) {
             // key is already inside buffer - update value
             if (insertion_point != level(min_level).end() && (*insertion_point).first == new_item.first) {
-                // TODO: free *insertion_point? must be done with smr!
                 *insertion_point = new_item; // update
                 mtx(min_level)->unlock();
                 return true;
-
             }
 
             // insert to buffer
@@ -207,6 +204,7 @@ namespace pgm {
             for (int l=min_level; l<=insert_level; ++l) {
                 to_merge_levels.push_back(levels[l-min_level]);
                 levels[l - min_level] = new Level();
+                levels[l - min_level]->reserve(max_size(l));
                 if (l >= min_index_level) {
                     pgms[l - min_index_level] = new PGMType();
                 }
@@ -223,7 +221,7 @@ namespace pgm {
 
             if (need_new_level) {
                 ++used_levels;
-                Level *new_level = new Level();
+                Level *new_level = NULL;
                 levels.push_back(new_level);
                 to_merge_levels.push_back(new_level);
                 Lock *new_mtx = new Lock();
@@ -240,7 +238,6 @@ namespace pgm {
 
 
             levels_merge(new_item, insert_level, slots_required, insertion_point_in_buffer, &to_merge_levels);
-            Level l = level(4);
             mtx(insert_level)->unlock();
         }
 
@@ -301,45 +298,6 @@ namespace pgm {
          * @param buffer_level determines the size of level 0, equal to the sum of base^i for i = 0, ..., buffer_level
          * @param index_level the minimum level at which an index is constructed to speed up searches
          */
-        template<typename Iterator>
-        DynamicPGMIndex(Iterator first, Iterator last, uint8_t base = 8, uint8_t buffer_level = 0, uint8_t index_level = 0)
-        : DynamicPGMIndex(base, buffer_level, index_level) {
-            size_t n = std::distance(first, last);
-            used_levels = std::max<uint8_t>(ceil_log_base(n), min_level) + 1;
-            int starting_size = std::max<uint8_t>(used_levels, 32) - min_level + 1;
-            for (int i=0; i<starting_size; ++i) {
-                Lock *new_mtx = new Lock();
-                levels_mtx.push_back(new_mtx);
-                Level *new_lvl = new Level();
-                levels.push_back(new_lvl);
-            }
-            level(min_level).reserve(buffer_max_size);
-            for (uint8_t i = min_level + 1; i < max_fully_allocated_level(); ++i)
-                level(i).reserve(max_size(i));
-
-            if (n == 0) {
-                used_levels = min_level;
-                return;
-            }
-
-            // Copy only the first of each group of pairs with same key value
-            auto &target = level(used_levels - 1);
-            target.resize(n);
-            auto out = target.begin();
-            *out++ = Item(first->first, first->second);
-            while (++first != last) {
-                if (first->first < std::prev(out)->first)
-                    throw std::invalid_argument("Range is not sorted");
-                if (first->first != std::prev(out)->first)
-                    *out++ = Item(first->first, first->second);
-            }
-            target.resize(std::distance(target.begin(), out));
-
-            if (has_pgm(used_levels - 1)) {
-                pgms = decltype(pgms)(used_levels - min_index_level);
-                pgm(used_levels - 1) = PGMType(target.begin(), target.end());
-            }
-        }
 
         /**
          * Inserts an element into the container if @p key does not exists in the container. If @p key already exists, the
@@ -360,7 +318,7 @@ namespace pgm {
          * @param key key value of the element to search for
          * @return an iterator to an element with key equivalent to @p key. If no such element is found, end() is returned
          */
-        std::pair<K, V> *find(K key, int tid) {
+        bool find(K key, V& ret, int tid) {
             smr.on_start(tid);
             Level *l;
             PGMType *p;
@@ -386,17 +344,21 @@ namespace pgm {
                 }
 
                 auto it = lower_bound_bl(first, last, key);
-                if (it != l->end() && it->first == key) {
+                if (it->first == key) {
                     // auto ret = it->second == 1 ? new std::pair<K, V>(it->first, it->second) : NULL;
-                    auto ret = it->deleted() ? NULL : new std::pair<K, V>(it->first, it->second);
+                    // auto ret = it->deleted() ? NULL : new std::pair<K, V>(it->first, it->second);
                     if (i == min_level)
                         mtx(i)->unlock();
-                    return ret;
+                    if (it->deleted()) {
+                        return false;
+                    }
+                    memcpy(&ret, &(it->second), sizeof(V)); // ignore memcpy return value
+                    return true;
                 }
                 if (i == min_level)
                     mtx(i)->unlock();
             }
-            return NULL;
+            return false;
         }
 
         /**
@@ -586,6 +548,13 @@ namespace pgm {
 
         template<bool SkipDeleted, typename In1, typename In2, typename OutIterator>
         static OutIterator merge(In1 first1, In1 last1, In2 first2, In2 last2, OutIterator result) {
+            if (std::distance(first2, last2) <= 1) {
+                return std::copy(first1, last1, result);
+            }
+            if (std::distance(first1, last1) <= 1) {
+                return std::copy(first2, last2, result);
+            }
+
             while (first1 != last1 && first2 != last2) {
                 if (*first2 < *first1) {
                     *result = *first2;
@@ -830,47 +799,20 @@ namespace pgm {
 #pragma pack(push, 1)
 
     template<typename K, typename V, typename PGMType, typename Lock>
-            class DynamicPGMIndex<K, V, PGMType, Lock>::ItemA {
-        const static V tombstone;
-
-        template<typename T = V, std::enable_if_t<std::is_pointer_v<T>, int> = 0>
-                static V get_tombstone() { return new std::remove_pointer_t<V>(); }
-                template<typename T = V, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
-                        static V get_tombstone() { return std::numeric_limits<V>::max(); }
-
+    class DynamicPGMIndex<K, V, PGMType, Lock>::Item {
+    bool flag;
     public:
         K first;
         V second;
 
-        ItemA() { /* do not (default-)initialize for a more efficient std::vector<ItemA>::resize */ }
-        explicit ItemA(const K &key) : first(key), second(tombstone) {}
-        explicit ItemA(const K &key, const V &value) : first(key), second(value) {
-            if (second == tombstone)
-                throw std::invalid_argument("The specified value is reserved and cannot be used.");
-        }
-
-        operator K() const { return first; }
-        bool deleted() const { return this->second == tombstone; }
-    };
-
-    template<typename K, typename V, typename PGMType, typename Lock>
-    const V DynamicPGMIndex<K, V, PGMType, Lock>::ItemA::tombstone = get_tombstone<V>();
-
-    template<typename K, typename V, typename PGMType, typename Lock>
-    class DynamicPGMIndex<K, V, PGMType, Lock>::ItemB {
-        bool flag;
-
-    public:
-        K first;
-        V second;
-
-        ItemB() { /* do not (default-)initialize for a more efficient std::vector<ItemB>::resize */ }
-        explicit ItemB(const K &key) : flag(true), first(key), second() {}
-        explicit ItemB(const K &key, const V &value) : flag(false), first(key), second(value) {}
-
+        Item() { /* do not (default-)initialize for a more efficient std::vector<ItemA>::resize */ }
+        explicit Item(const K &key) : first(key), second(), flag(true) {}
+        explicit Item(const K &key, const V &value) : first(key), second(value), flag(false) {}
         operator K() const { return first; }
         bool deleted() const { return flag; }
     };
+
+
 
 #pragma pack(pop)
 
