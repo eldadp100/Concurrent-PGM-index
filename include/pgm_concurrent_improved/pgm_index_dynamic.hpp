@@ -561,6 +561,9 @@ namespace pgm {
             if (std::distance(first2, last2) <= 1) {
                 return std::copy(first1, last1, result);
             }
+            if (std::distance(first1, last1) <= 1) {
+                return std::copy(first2, last2, result);
+            }
             while (first1 != last1 && first2 != last2) {
                 if (*first2 < *first1) {
                     *result = *first2;
