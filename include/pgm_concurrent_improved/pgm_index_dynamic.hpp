@@ -93,7 +93,9 @@ namespace pgm {
 
             Level *tmp_a = new Level(size_hint + max_size(target));
             Level *tmp_b = new Level(size_hint + max_size(target));
-
+            if (tmp_a == NULL || tmp_b == NULL) {
+                int a = 1;
+            }
             // Insert new_item in sorted order in the first level
             auto alternate = true;
             auto it = std::move((*to_merge_levels)[0]->begin(), insertion_point, tmp_a->begin());
@@ -208,6 +210,7 @@ namespace pgm {
             for (int l=min_level+1; l<=insert_level; ++l) {
                 to_merge_levels.push_back(levels[l-min_level]);
                 levels[l - min_level] = new Level();
+                levels[l - min_level]->reserve(max_size(l));
                 if (l >= min_index_level) {
                     pgms[l - min_index_level] = new PGMType();
                 }
@@ -555,6 +558,9 @@ namespace pgm {
 
         template<bool SkipDeleted, typename In1, typename In2, typename OutIterator>
         static OutIterator merge(In1 first1, In1 last1, In2 first2, In2 last2, OutIterator result) {
+            if (std::distance(first2, last2) <= 1) {
+                return std::copy(first1, last1, result);
+            }
             while (first1 != last1 && first2 != last2) {
                 if (*first2 < *first1) {
                     *result = *first2;
@@ -574,7 +580,8 @@ namespace pgm {
                     ++result;
                 }
             }
-            return std::copy(first2, last2, std::copy(first1, last1, result));
+            auto a = std::copy(first1, last1, result);
+            return std::copy(first2, last2, a);
         }
 
         template<class RandomIt>

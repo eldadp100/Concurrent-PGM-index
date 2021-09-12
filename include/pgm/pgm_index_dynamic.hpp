@@ -204,6 +204,7 @@ namespace pgm {
             for (int l=min_level; l<=insert_level; ++l) {
                 to_merge_levels.push_back(levels[l-min_level]);
                 levels[l - min_level] = new Level();
+                levels[l - min_level]->reserve(max_size(l));
                 if (l >= min_index_level) {
                     pgms[l - min_index_level] = new PGMType();
                 }
@@ -237,7 +238,6 @@ namespace pgm {
 
 
             levels_merge(new_item, insert_level, slots_required, insertion_point_in_buffer, &to_merge_levels);
-            Level l = level(4);
             mtx(insert_level)->unlock();
         }
 
@@ -548,6 +548,13 @@ namespace pgm {
 
         template<bool SkipDeleted, typename In1, typename In2, typename OutIterator>
         static OutIterator merge(In1 first1, In1 last1, In2 first2, In2 last2, OutIterator result) {
+            if (std::distance(first2, last2) <= 1) {
+                return std::copy(first1, last1, result);
+            }
+            if (std::distance(first1, last1) <= 1) {
+                return std::copy(first2, last2, result);
+            }
+
             while (first1 != last1 && first2 != last2) {
                 if (*first2 < *first1) {
                     *result = *first2;
